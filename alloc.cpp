@@ -299,7 +299,7 @@ extern "C" void free(void *ptr) {
         __sync_sub_and_fetch(&memocount, size >> 8);
     }
 
-    UnRef((void *)block, 1, (TAllocThreadState *)pthread_getspecific(allocatorKey));
+    UnRef((void *)block, 1, init == 2 ? (TAllocThreadState *)pthread_getspecific(allocatorKey) : 0);
 }
 
 #define OP_THROWNOTHING throw()
