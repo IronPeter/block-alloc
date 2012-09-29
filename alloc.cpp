@@ -149,10 +149,10 @@ void UnrefAtomic(void *block, int add, TAllocThreadState *tls) {
     TBlockHeader *hdr = (TBlockHeader *)block;
     if (__sync_sub_and_fetch(&hdr->RefCount, add) == 0) {
         size_t index = ++counter % ORDERS;
-        void *data[1];
+        void *data[1] = {0};
         size_t count = PopPages(index, data, 1);
         if (count) {
-          UnMap(data[0], index);
+            UnMap(data[0], index);
         }
         size_t order = hdr->Size / PAGE_SIZE;
         if (order == CHUNK_ORDER && tls) {
@@ -168,20 +168,23 @@ void UnrefAtomic(void *block, int add, TAllocThreadState *tls) {
 }
 
 void CreateAllocatorKey() {
-    if (init == 0 && __sync_bool_compare_and_swap(&init, 0, 1)) {
+    if (__sync_bool_compare_and_swap(&init, 0, 1)) {
         pthread_key_create(&allocatorKey, Destructor);
         init = 2;
     }
-    while (init < 2);
 }
 
+static TAllocThreadState fake;
+static long long lock = 0;
+
 void SetKey() {
-    static TAllocThreadState fake;
-    pthread_setspecific(allocatorKey, (void *)&fake);
-    TAllocThreadState *tls = (TAllocThreadState *)malloc(sizeof(TAllocThreadState));
-    memset(tls, 0, sizeof(TAllocThreadState));
-    tls->AllocLimit = SINGLE_ALLOC;
-    pthread_setspecific(allocatorKey, (void *)tls);
+    if (__sync_bool_compare_and_swap(&lock, 0, 1)) {
+        TAllocThreadState *tls = (TAllocThreadState *)malloc(sizeof(TAllocThreadState));
+        memset(tls, 0, sizeof(TAllocThreadState));
+        tls->AllocLimit = SINGLE_ALLOC;
+        pthread_setspecific(allocatorKey, (void *)tls);
+        lock = 0;
+    }
 }
 
 void UnRef(void *block, int counter, TAllocThreadState *tls) {
@@ -219,13 +222,15 @@ void Destructor(void *data) {
 }
 
 extern "C" void *malloc(size_t size) {
+    TAllocThreadState *tls = &fake;
     if (init < 2) {
         CreateAllocatorKey();
-    }
-    TAllocThreadState *tls = (TAllocThreadState *)pthread_getspecific(allocatorKey);
-    if (tls == 0) {
-        SetKey();
+    } else {
         tls = (TAllocThreadState *)pthread_getspecific(allocatorKey);
+        if (tls == 0) {
+            SetKey();
+            tls = &fake;
+        }
     }
     size = Align(size, sizeof(size_t));
     size_t extsize = size + sizeof(size_t) + sizeof(TBlockHeader);
